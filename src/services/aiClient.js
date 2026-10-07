@@ -9,13 +9,17 @@ export class AiUnavailableError extends Error {}
 
 /** Asks the server whether an AI key is set. The key itself never reaches the browser. */
 export async function getAiStatus() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10000)
   try {
-    const res = await fetch(`${ENDPOINT}?status=1`)
+    const res = await fetch(`${ENDPOINT}?status=1`, { signal: controller.signal })
     if (!res.ok) return { reachable: false, configured: false }
     const body = await res.json()
     return { reachable: true, configured: Boolean(body.configured), provider: body.provider || null, status: body.status || null, model: body.model || null }
   } catch {
     return { reachable: false, configured: false }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -26,28 +30,36 @@ export async function sendToAssistant({ conversationId, message, mode = 'chat', 
   if (!token) throw new Error('Your session has expired. Please sign in again.')
 
   let res
+  let body = null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 45000)
   try {
     res = await fetch(ENDPOINT, {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ conversation_id: conversationId || null, message, mode, entity_id: entityId || null, today: todayISO() }),
     })
-  } catch {
+    try {
+      body = await res.json()
+    } catch {
+      if (controller.signal.aborted) throw new DOMException('Request timed out', 'AbortError')
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') throw new AiUnavailableError('The AI took too long to respond. Please try again.')
     throw new AiUnavailableError('Could not reach the AI service. Check your connection.')
+  } finally {
+    clearTimeout(timer)
   }
-
-  if (res.status === 404) {
+  if (res.status === 404 && body?.error !== 'not_found') {
     throw new AiUnavailableError('The AI service is not available here. When running locally, start the app with "npx netlify dev" instead of "npm run dev".')
-  }
-  let body = null
-  try {
-    body = await res.json()
-  } catch {
-    /* non-JSON error page */
   }
   if (res.status === 403 && body?.error === 'ai_disabled') throw new AiNotConfiguredError('AI is turned off in your settings.')
   if (res.status === 503 && body?.error === 'ai_not_configured') throw new AiNotConfiguredError('AI Assistant is not configured yet.')
   if (!res.ok) throw new Error(body?.message || 'Something went wrong. Please try again.')
+  if (!body || typeof body.reply !== 'string' || typeof body.conversation_id !== 'string' || !Array.isArray(body.actions)) {
+    throw new AiUnavailableError('The AI service returned an unexpected response. Please try again.')
+  }
   return body
 }
 
