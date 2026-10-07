@@ -13,19 +13,20 @@ const serverFiles = walk(path.join(root, 'netlify')).filter((f) => f.endsWith('.
 test('no AI key or service-role key is referenced by browser code', () => {
   for (const f of srcFiles) {
     const s = read(f)
-    assert.ok(!/AI_API_KEY|AI_BASE_URL|SERVICE_ROLE|service_role/i.test(s), `${f} mentions a server secret`)
+    assert.ok(!/AI_API_KEY|GEMINI_API_KEY|GOOGLE_GEMINI_BASE_URL|AI_BASE_URL|SERVICE_ROLE|service_role/i.test(s), `${f} mentions a server secret`)
     assert.ok(!/import\.meta\.env\.VITE_AI/.test(s), `${f} reads a VITE_AI variable`)
   }
 })
 test('no VITE_ variable holds a secret anywhere in the project', () => {
   for (const f of [...srcFiles, ...serverFiles, path.join(root, '.env.example'), path.join(root, 'netlify.toml'), path.join(root, 'vite.config.js')]) {
-    assert.ok(!/VITE_AI|VITE_[A-Z_]*(SECRET|SERVICE|PRIVATE)/.test(read(f)), `${f} defines a secret as a VITE_ variable`)
+    assert.ok(!/VITE_AI|VITE_GEMINI|VITE_[A-Z_]*(SECRET|SERVICE|PRIVATE)/.test(read(f)), `${f} defines a secret as a VITE_ variable`)
   }
 })
 test('.env is git-ignored and .env.example holds placeholders only', () => {
   assert.match(read(path.join(root, '.gitignore')), /^\.env$/m)
   const env = read(path.join(root, '.env.example'))
   assert.match(env, /^AI_API_KEY=$/m)
+  assert.match(env, /^GEMINI_API_KEY=$/m)
   assert.ok(!/sk-[A-Za-z0-9]{10,}|eyJ[A-Za-z0-9_-]{20,}/.test(env))
 })
 test('the AI function authenticates the caller and only ever uses the caller\'s own token', () => {

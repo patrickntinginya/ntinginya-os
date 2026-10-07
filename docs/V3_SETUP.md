@@ -1,14 +1,15 @@
 # Personal Life OS V3 - Setup Guide (for beginners)
 
-> **Honest status:** V3 was written in an environment with **no access to the npm registry and no database**.
-> `npm install`, `npm run build`, `npm run preview`, the SQL migrations, the RLS test, the AI function and the PWA install
-> have **not been run yet**. What *was* run: the unit tests (`npm test`) and a script that checks every file parses and
-> every import points at something that exists. Treat every step below as a real test; a failing step tells you what to fix.
+> **Gemini integration verification (October 7, 2026):** 168 automated tests passed. Live Gemini responses and a
+> validated task proposal were checked without changing user records. Authenticated function tests used mocked
+> services, not a real signed-in account. Build and deployment validation were left to the managed platform;
+> the new production deployment was not confirmed. Real browser flows and PWA installation still need verification.
+> No SQL migrations or SQL isolation tests were executed during this integration.
 
 ## 0. What you need
 - Node.js 20 or newer (https://nodejs.org) and a terminal.
 - A free Supabase account (https://supabase.com) and a Netlify account (https://netlify.com).
-- Optional: an Anthropic API key for the AI features. The app works without it.
+- Optional: a Google Gemini API key for the AI features. Other existing providers remain supported; the app works without AI.
 
 ## 1. Install and test the code
 ```bash
@@ -49,9 +50,10 @@ Copy `.env.example` to `.env` and fill in:
 |---|---|---|
 | `VITE_SUPABASE_URL` | browser | Project URL |
 | `VITE_SUPABASE_ANON_KEY` | browser | anon public key only |
-| `AI_PROVIDER` | **server only** | `anthropic`, `openai`, `ollama` or `none`. Empty + `AI_API_KEY` set = anthropic. `gemini` is recognised but **not implemented** |
+| `AI_PROVIDER` | **server only** | `gemini`, `anthropic`, `openai`, `ollama` or `none`. Unset + `GEMINI_API_KEY` selects Gemini; otherwise `AI_API_KEY` retains the Anthropic fallback |
+| `GEMINI_API_KEY` | **server only** | Google Gemini key. Set in Netlify with Functions scope for the relevant deployment contexts. Never prefix with `VITE_` |
 | `AI_API_KEY` | **server only** | optional. Never starts with `VITE_` |
-| `AI_MODEL` | server only | defaults: anthropic `claude-sonnet-5-5`, openai `gpt-4o-mini`, ollama `llama3.1` |
+| `AI_MODEL` | server only | defaults: gemini `gemini-3.5-flash`, anthropic `claude-sonnet-5-5`, openai `gpt-4o-mini`, ollama `llama3.1` |
 | `AI_BASE_URL` | server only | needed for ollama (must be reachable from Netlify, not your laptop's localhost) |
 | `AI_MAX_TOKENS` | server only | default 1400 |
 | `AI_DAILY_LIMIT` | server only | AI messages per user per 24h, default 100 |

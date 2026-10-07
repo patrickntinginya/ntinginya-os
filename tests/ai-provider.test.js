@@ -28,8 +28,10 @@ test('ollama needs a base URL, not a key', () => {
   assert.equal(resolveProvider({ AI_PROVIDER: 'ollama' }).missing, 'AI_BASE_URL')
   assert.equal(resolveProvider({ AI_PROVIDER: 'ollama', AI_BASE_URL: 'https://ollama.example.com/v1' }).status, 'ready')
 })
-test('gemini and unknown names are reported as unsupported, never silently faked', () => {
-  assert.equal(resolveProvider({ AI_PROVIDER: 'gemini', AI_API_KEY: 'k' }).status, 'unsupported')
+test('Gemini needs its own server key; unknown providers remain unsupported', () => {
+  const cfg = resolveProvider({ AI_PROVIDER: 'gemini', AI_API_KEY: 'k' })
+  assert.equal(cfg.status, 'not_configured')
+  assert.equal(cfg.missing, 'GEMINI_API_KEY')
   assert.equal(resolveProvider({ AI_PROVIDER: 'banana', AI_API_KEY: 'k' }).status, 'unsupported')
 })
 test('the public status never contains the key', () => {

@@ -6,6 +6,7 @@ import { callModel, publicStatus, resolveProvider } from '../lib/ai/provider.js'
 import { MODES, MODE_INSTRUCTIONS, systemPrompt } from '../lib/ai/prompts.js'
 import { buildContext } from '../lib/ai/context.js'
 import { toolDefinitions, validateAction } from '../../src/lib/ai/actions.js'
+import { ProviderError, publicProviderError } from '../lib/ai/errors.js'
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } })
 const GENERIC = 'Something went wrong. Please try again.'
@@ -21,6 +22,10 @@ export default async (request) => {
   }
   if (request.method !== 'POST') return json(405, { error: 'method_not_allowed', message: GENERIC })
 
+  const authorization = request.headers.get('authorization') || ''
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization)?.[1]
+  if (!token) return json(401, { error: 'unauthorized', message: 'Please sign in again.' })
+
   const supabaseUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL
   const anonKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY
   if (!supabaseUrl || !anonKey) {
@@ -29,53 +34,58 @@ export default async (request) => {
   }
 
   // 1. Who is calling? Verified by Supabase, never trusted from the request body.
-  const token = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
-  if (!token) return json(401, { error: 'unauthorized', message: 'Please sign in again.' })
-  const client = createClient(supabaseUrl, anonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { Authorization: `Bearer ${token}` } },
-  })
-  const { data: userData, error: userError } = await client.auth.getUser(token)
-  if (userError || !userData?.user) return json(401, { error: 'unauthorized', message: 'Please sign in again.' })
-
-  // 2. Is the AI configured, and has this user switched it on? (The app works fully without either.)
-  const cfg = resolveProvider(env)
-  if (!cfg.configured) return json(503, { error: 'ai_not_configured', message: 'AI Assistant is not configured yet.' })
-  const { data: prof } = await client.from('profiles').select('ai_enabled').eq('user_id', userData.user.id).maybeSingle()
-  if (prof && prof.ai_enabled === false) return json(403, { error: 'ai_disabled', message: 'AI is turned off in your settings.' })
-
-  // 3. Validate input.
-  let body
   try {
-    const raw = await request.text()
-    if (raw.length > 20000) return json(413, { error: 'too_large', message: 'That message is too long.' })
-    body = JSON.parse(raw)
-  } catch {
-    return json(400, { error: 'bad_request', message: GENERIC })
-  }
-  const message = typeof body.message === 'string' ? body.message.trim() : ''
-  const mode = body.mode || 'chat'
-  const today = typeof body.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.today) ? body.today : null
-  const conversationId = body.conversation_id && UUID.test(body.conversation_id) ? body.conversation_id : null
-  const entityId = body.entity_id && UUID.test(body.entity_id) ? body.entity_id : null
-  if (!message || message.length > 4000 || !MODES.includes(mode) || !today || Number.isNaN(new Date(`${today}T00:00:00Z`).getTime())) {
-    return json(400, { error: 'bad_request', message: 'Please check your message and try again.' })
-  }
+    const client = createClient(supabaseUrl, anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    })
+    const { data: userData, error: userError } = await client.auth.getUser(token)
+    if (userError || !userData?.user) return json(401, { error: 'unauthorized', message: 'Please sign in again.' })
 
-  try {
+    const cfg = resolveProvider(env)
+    if (!cfg.configured) return json(503, { error: 'ai_not_configured', message: 'AI Assistant is not configured yet.' })
+    const { data: prof, error: profileError } = await client.from('profiles').select('ai_enabled').eq('user_id', userData.user.id).maybeSingle()
+    if (profileError) throw profileError
+    if (prof && prof.ai_enabled === false) return json(403, { error: 'ai_disabled', message: 'AI is turned off in your settings.' })
+
+    let body
+    try {
+      const raw = await request.text()
+      if (raw.length > 20000) return json(413, { error: 'too_large', message: 'That message is too long.' })
+      body = JSON.parse(raw)
+    } catch {
+      return json(400, { error: 'bad_request', message: GENERIC })
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return json(400, { error: 'bad_request', message: 'Please check your message and try again.' })
+    const message = typeof body.message === 'string' ? body.message.trim() : ''
+    const mode = body.mode || 'chat'
+    const today = typeof body.today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.today) ? body.today : null
+    const conversationId = body.conversation_id && UUID.test(body.conversation_id) ? body.conversation_id : null
+    const entityId = body.entity_id && UUID.test(body.entity_id) ? body.entity_id : null
+    const parsedDate = today && new Date(`${today}T00:00:00Z`)
+    if (!message || message.length > 4000 || !MODES.includes(mode) || !parsedDate || Number.isNaN(parsedDate.getTime())
+      || parsedDate.toISOString().slice(0, 10) !== today
+      || (body.conversation_id != null && (typeof body.conversation_id !== 'string' || !conversationId))
+      || (body.entity_id != null && (typeof body.entity_id !== 'string' || !entityId))) {
+      return json(400, { error: 'bad_request', message: 'Please check your message and try again.' })
+    }
+
     // 4. Daily cost guard (counts this user's messages in the last 24 hours).
     const limit = Number(env.AI_DAILY_LIMIT) || 100
     const since = new Date(Date.now() - 86400000).toISOString()
-    const { count } = await client.from('ai_messages').select('id', { count: 'exact', head: true }).eq('role', 'user').gte('created_at', since)
+    const { count, error: countError } = await client.from('ai_messages').select('id', { count: 'exact', head: true }).eq('user_id', userData.user.id).eq('role', 'user').gte('created_at', since)
+    if (countError) throw countError
     if ((count ?? 0) >= limit) return json(429, { error: 'rate_limited', message: 'You have reached the daily AI limit. Try again tomorrow.' })
 
     // 5. Conversation (must belong to the caller; RLS enforces this).
     let convId = conversationId
     let history = []
     if (convId) {
-      const { data: conv } = await client.from('ai_conversations').select('id').eq('id', convId).maybeSingle()
+      const { data: conv, error: conversationError } = await client.from('ai_conversations').select('id').eq('user_id', userData.user.id).eq('id', convId).maybeSingle()
+      if (conversationError) throw conversationError
       if (!conv) return json(404, { error: 'not_found', message: 'That conversation was not found.' })
-      const { data: msgs } = await client.from('ai_messages').select('role,content').eq('conversation_id', convId).order('created_at', { ascending: false }).limit(10)
+      const { data: msgs, error: historyError } = await client.from('ai_messages').select('role,content').eq('user_id', userData.user.id).eq('conversation_id', convId).order('created_at', { ascending: false }).limit(10)
+      if (historyError) throw historyError
       history = (msgs || []).reverse()
     } else {
       const { data: conv, error } = await client.from('ai_conversations').insert({ title: message.slice(0, 60) }).select('id').single()
@@ -119,7 +129,12 @@ export default async (request) => {
     return json(200, { conversation_id: convId, reply, actions })
   } catch (e) {
     // Log the kind of failure only. Never log user data, tokens or keys.
-    console.error('ai-chat failed:', e?.message || e?.code || 'unknown')
+    if (e instanceof ProviderError) {
+      const { status, ...body } = publicProviderError(e)
+      console.error('ai-chat failed:', body.error)
+      return json(status, body)
+    }
+    console.error('ai-chat failed: server_error')
     return json(500, { error: 'server_error', message: GENERIC })
   }
 }
